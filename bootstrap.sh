@@ -10,8 +10,9 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap.sh | bash
 
 # Modify the variables at the top as needed.
-PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc python3 python3-pip python3-venv"
+PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc"
 INSTALL_DOCKER=true
+INSTALL_AWSCLI=true
 INSTALL_NODE=false
 NODE_VERSION="20"          # NodeSource LTS version
 DOTFILES_REPO="git@github.com:NDS-Han/ec2-bootstrap.git"
@@ -24,9 +25,8 @@ CONDA_PYTHON_VERSION="3.12"  # Leave empty to skip installing a specific Python 
 INSTALL_ZSH=true
 INSTALL_P10K=true
 
-log() {
-  echo "[bootstrap] $*"
-}
+log() { printf '\033[1;34m[bootstrap]\033[0m %s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 detect_pkg_manager() {
   if command -v dnf &>/dev/null; then
@@ -62,12 +62,46 @@ install_packages() {
   esac
 }
 
+install_awscli() {
+  if [[ "$INSTALL_AWSCLI" != "true" ]]; then
+    return
+  fi
+
+  if have aws; then
+    log "AWS CLI is already installed."
+    return
+  fi
+
+  log "Installing AWS CLI..."
+  local arch
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64)
+      arch="x86_64"
+      ;;
+    aarch64|arm64)
+      arch="aarch64"
+      ;;
+    *)
+      log "Unsupported architecture for AWS CLI: $arch"
+      return
+      ;;
+  esac
+
+  local aws_zip
+  aws_zip="/tmp/awscliv2.zip"
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o "$aws_zip"
+  unzip -q "$aws_zip" -d /tmp
+  sudo /tmp/aws/install --update
+  rm -rf /tmp/aws "$aws_zip"
+}
+
 install_docker() {
   if [[ "$INSTALL_DOCKER" != "true" ]]; then
     return
   fi
 
-  if command -v docker &>/dev/null; then
+  if have docker; then
     log "Docker is already installed."
   else
     log "Installing Docker..."
@@ -81,6 +115,18 @@ install_docker() {
     log "Adding user to the docker group."
     sudo usermod -aG docker "$USER" || true
   fi
+
+  # Ensure BuildKit is the default builder (idempotent)
+  if [[ "$(sudo cat /etc/docker/daemon.json 2>/dev/null | jq -r '.features.buildkit' 2>/dev/null)" != "true" ]]; then
+    log "Enabling Docker BuildKit in /etc/docker/daemon.json"
+    sudo mkdir -p /etc/docker
+    local existing
+    existing=$(sudo cat /etc/docker/daemon.json 2>/dev/null || echo '{}')
+    echo "$existing" | jq '.features.buildkit = true' | sudo tee /etc/docker/daemon.json >/dev/null
+    sudo systemctl restart docker || true
+  else
+    log "Docker BuildKit already enabled — skipping"
+  fi
 }
 
 install_node() {
@@ -88,7 +134,7 @@ install_node() {
     return
   fi
 
-  if command -v node &>/dev/null; then
+  if have node; then
     log "Node.js is already installed."
     return
   fi
@@ -108,7 +154,7 @@ install_anaconda() {
     return
   fi
 
-  if command -v conda &>/dev/null; then
+  if have conda; then
     log "Conda is already installed."
     return
   fi
@@ -128,7 +174,7 @@ install_anaconda() {
 
   # Initialize conda for the shell
   "$ANACONDA_PREFIX/bin/conda" init bash || true
-  if command -v zsh &>/dev/null; then
+  if have zsh; then
     "$ANACONDA_PREFIX/bin/conda" init zsh || true
   fi
 
@@ -140,7 +186,7 @@ setup_shell() {
     return
   fi
 
-  if ! command -v zsh &>/dev/null; then
+  if ! have zsh; then
     log "zsh is not installed. Make sure it's included in the base packages."
     return
   fi
@@ -208,14 +254,90 @@ setup_dotfiles() {
   fi
 }
 
+verify_installations() {
+  log "Verifying installations"
+  local fail=0
+  local v
+
+  if have aws; then
+    v=$(aws --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "aws:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "aws:" "—"
+    fail=1
+  fi
+
+  if have docker; then
+    v=$(docker --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "docker:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "docker:" "—"
+    fail=1
+  fi
+
+  if have python3; then
+    v=$(python3 --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "python:" "$v"
+  elif [[ -x "$ANACONDA_PREFIX/bin/python" ]]; then
+    v=$("$ANACONDA_PREFIX/bin/python" --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "python:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "python:" "—"
+    fail=1
+  fi
+
+  if [[ "$INSTALL_ANACONDA" == "true" ]]; then
+    if [[ -x "$ANACONDA_PREFIX/bin/conda" ]]; then
+      v=$("$ANACONDA_PREFIX/bin/conda" --version 2>&1 | head -1)
+      printf '  %-10s %-40s [OK]\n' "conda:" "$v"
+    else
+      printf '  %-10s %-40s [FAIL] not installed\n' "conda:" "—"
+      fail=1
+    fi
+  fi
+
+  if have git; then
+    v=$(git --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "git:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "git:" "—"
+    fail=1
+  fi
+
+  if have zsh; then
+    v=$(zsh --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "zsh:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "zsh:" "—"
+    fail=1
+  fi
+
+  if [[ "$INSTALL_NODE" == "true" ]]; then
+    if have node; then
+      v=$(node --version 2>&1 | head -1)
+      printf '  %-10s %-40s [OK]\n' "node:" "$v"
+    else
+      printf '  %-10s %-40s [FAIL] not installed\n' "node:" "—"
+      fail=1
+    fi
+  fi
+
+  if [[ "$fail" -ne 0 ]]; then
+    log "Verification failed. Please fix the missing tools and re-run."
+    exit 1
+  fi
+}
+
 main() {
   log "Starting development environment bootstrap..."
   install_packages
+  install_awscli
   install_docker
   install_node
   setup_shell
   setup_dotfiles
   install_anaconda
+  verify_installations
   log "Bootstrap complete. Changes for the docker group, shell, and conda take effect in a new session."
 }
 
