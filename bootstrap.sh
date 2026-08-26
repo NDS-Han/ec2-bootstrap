@@ -10,7 +10,7 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap.sh | bash
 
 # Modify the variables at the top as needed.
-PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc"
+PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc fastfetch"
 INSTALL_DOCKER=true
 INSTALL_AWSCLI=true
 INSTALL_NODE=false
