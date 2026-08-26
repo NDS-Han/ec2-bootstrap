@@ -159,6 +159,11 @@ install_anaconda() {
     return
   fi
 
+  if [[ -d "$ANACONDA_PREFIX" ]]; then
+    log "Conda prefix already exists at $ANACONDA_PREFIX. Skipping installation."
+    return
+  fi
+
   log "Installing Conda: $ANACONDA_INSTALLER_URL"
   local installer
   installer="/tmp/anaconda_installer.sh"
