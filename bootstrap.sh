@@ -154,36 +154,36 @@ install_anaconda() {
     return
   fi
 
-  if have conda; then
-    log "Conda is already installed."
-    return
+  local conda_bin
+  if [[ -x "$ANACONDA_PREFIX/bin/conda" ]]; then
+    conda_bin="$ANACONDA_PREFIX/bin/conda"
+    log "Conda is already installed at $ANACONDA_PREFIX."
+  elif have conda; then
+    conda_bin=$(command -v conda)
+    log "Conda is already installed at $conda_bin."
+  else
+    log "Installing Conda: $ANACONDA_INSTALLER_URL"
+    local installer
+    installer="/tmp/anaconda_installer.sh"
+    wget -q "$ANACONDA_INSTALLER_URL" -O "$installer"
+    chmod +x "$installer"
+    "$installer" -b -p "$ANACONDA_PREFIX"
+    rm -f "$installer"
+    conda_bin="$ANACONDA_PREFIX/bin/conda"
+
+    if [[ -n "$CONDA_PYTHON_VERSION" ]]; then
+      log "Installing Python $CONDA_PYTHON_VERSION in the Conda base environment..."
+      "$conda_bin" install -y -n base "python=$CONDA_PYTHON_VERSION"
+    fi
   fi
 
-  if [[ -d "$ANACONDA_PREFIX" ]]; then
-    log "Conda prefix already exists at $ANACONDA_PREFIX. Skipping installation."
-    return
-  fi
-
-  log "Installing Conda: $ANACONDA_INSTALLER_URL"
-  local installer
-  installer="/tmp/anaconda_installer.sh"
-  wget -q "$ANACONDA_INSTALLER_URL" -O "$installer"
-  chmod +x "$installer"
-  "$installer" -b -p "$ANACONDA_PREFIX"
-  rm -f "$installer"
-
-  if [[ -n "$CONDA_PYTHON_VERSION" ]]; then
-    log "Installing Python $CONDA_PYTHON_VERSION in the Conda base environment..."
-    "$ANACONDA_PREFIX/bin/conda" install -y -n base "python=$CONDA_PYTHON_VERSION"
-  fi
-
-  # Initialize conda for the shell
-  "$ANACONDA_PREFIX/bin/conda" init bash || true
+  log "Initializing Conda for bash and zsh..."
+  "$conda_bin" init bash || true
   if have zsh; then
-    "$ANACONDA_PREFIX/bin/conda" init zsh || true
+    "$conda_bin" init zsh || true
   fi
 
-  log "Conda installed. You can use 'conda' in a new session."
+  log "Conda is ready. Restart your shell or run 'exec zsh' to apply it to the current session."
 }
 
 setup_shell() {
