@@ -13,7 +13,7 @@ set -euo pipefail
 PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc fastfetch"
 INSTALL_DOCKER=true
 INSTALL_AWSCLI=true
-INSTALL_NODE=false
+INSTALL_NODE=true
 NODE_VERSION="20"          # NodeSource LTS version
 DOTFILES_REPO="git@github.com:NDS-Han/ec2-bootstrap.git"
 DOTFILES_INSTALL_SCRIPT="" # Path to an install script inside the dotfiles repo (e.g., install.sh)
@@ -134,12 +134,12 @@ install_node() {
     return
   fi
 
-  if have node; then
-    log "Node.js is already installed."
+  if have node && have npm; then
+    log "Node.js and npm are already installed."
     return
   fi
 
-  log "Installing Node.js v${NODE_VERSION}..."
+  log "Installing Node.js v${NODE_VERSION} and npm..."
   if command -v apt-get &>/dev/null; then
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash -
     sudo apt-get install -y nodejs
@@ -147,6 +147,21 @@ install_node() {
     curl -fsSL "https://rpm.nodesource.com/setup_${NODE_VERSION}.x" | sudo bash -
     sudo dnf install -y nodejs || sudo yum install -y nodejs
   fi
+}
+
+remind_agent_skills_manual_install() {
+  if [[ "$INSTALL_NODE" != "true" ]]; then
+    return
+  fi
+
+  if ! have npm; then
+    log "npm is not available; skipping agent-skills reminder."
+    return
+  fi
+
+  log "Agent skills must be installed manually after the bootstrap completes."
+  log "Run the following command in a new shell session:"
+  log "  npx skills add addyosmani/agent-skills"
 }
 
 install_anaconda() {
@@ -325,6 +340,14 @@ verify_installations() {
       printf '  %-10s %-40s [FAIL] not installed\n' "node:" "—"
       fail=1
     fi
+
+    if have npm; then
+      v=$(npm --version 2>&1 | head -1)
+      printf '  %-10s %-40s [OK]\n' "npm:" "$v"
+    else
+      printf '  %-10s %-40s [FAIL] not installed\n' "npm:" "—"
+      fail=1
+    fi
   fi
 
   if [[ "$fail" -ne 0 ]]; then
@@ -343,6 +366,7 @@ main() {
   setup_dotfiles
   install_anaconda
   verify_installations
+  remind_agent_skills_manual_install
   log "Bootstrap complete. Changes for the docker group, shell, and conda take effect in a new session."
 }
 
