@@ -174,17 +174,17 @@ remind_agent_skills_manual_install() {
     return
   fi
 
-  log "Agent skills must be installed manually after the bootstrap completes."
-  log "Run the following command in a new shell session:"
+  log "❗ Agent skills must be installed manually after the bootstrap completes."
+  log "❗ Run the following command in a new shell session:"
   log "  npx skills add addyosmani/agent-skills"
 }
 
 show_post_install_reminders() {
-  log "To restart your SSH development session, run:"
+  log "❗ To restart your SSH development session, run:"
   log "  pkill -f 'vscode-server|cursor-server|devin-server'"
 
   if [[ "$INSTALL_ANACONDA" == "true" ]]; then
-    log "If Conda initialization did not take effect, run:"
+    log "❗ If Conda initialization did not take effect, run:"
     log "  ~/miniconda3/bin/conda init zsh"
     log "  exec zsh"
   fi
