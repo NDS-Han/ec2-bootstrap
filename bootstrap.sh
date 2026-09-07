@@ -13,6 +13,7 @@ set -euo pipefail
 PACKAGES="git curl wget jq unzip htop tree tmux vim zsh make gcc fastfetch"
 INSTALL_DOCKER=true
 INSTALL_AWSCLI=true
+INSTALL_KIRO_CLI=true
 INSTALL_NODE=true
 NODE_VERSION="20"          # NodeSource LTS version
 DOTFILES_REPO="git@github.com:NDS-Han/ec2-bootstrap.git"
@@ -129,6 +130,20 @@ install_docker() {
   fi
 }
 
+install_kiro_cli() {
+  if [[ "$INSTALL_KIRO_CLI" != "true" ]]; then
+    return
+  fi
+
+  if have kiro-cli || [[ -x "$HOME/.local/bin/kiro-cli" ]]; then
+    log "Kiro CLI is already installed."
+    return
+  fi
+
+  log "Installing Kiro CLI..."
+  curl -fsSL https://cli.kiro.dev/install | bash
+}
+
 install_node() {
   if [[ "$INSTALL_NODE" != "true" ]]; then
     return
@@ -162,6 +177,17 @@ remind_agent_skills_manual_install() {
   log "Agent skills must be installed manually after the bootstrap completes."
   log "Run the following command in a new shell session:"
   log "  npx skills add addyosmani/agent-skills"
+}
+
+show_post_install_reminders() {
+  log "To restart your SSH development session, run:"
+  log "  pkill -f 'vscode-server|cursor-server|devin-server'"
+
+  if [[ "$INSTALL_ANACONDA" == "true" ]]; then
+    log "If Conda initialization did not take effect, run:"
+    log "  ~/miniconda3/bin/conda init zsh"
+    log "  exec zsh"
+  fi
 }
 
 install_anaconda() {
@@ -332,6 +358,22 @@ verify_installations() {
     fail=1
   fi
 
+  if [[ "$INSTALL_KIRO_CLI" == "true" ]]; then
+    local kiro_bin
+    kiro_bin=$(command -v kiro-cli 2>/dev/null || true)
+    if [[ -z "$kiro_bin" && -x "$HOME/.local/bin/kiro-cli" ]]; then
+      kiro_bin="$HOME/.local/bin/kiro-cli"
+    fi
+
+    if [[ -n "$kiro_bin" ]]; then
+      v=$("$kiro_bin" --version 2>&1 | head -1)
+      printf '  %-10s %-40s [OK]\n' "kiro-cli:" "$v"
+    else
+      printf '  %-10s %-40s [FAIL] not installed\n' "kiro-cli:" "—"
+      fail=1
+    fi
+  fi
+
   if [[ "$INSTALL_NODE" == "true" ]]; then
     if have node; then
       v=$(node --version 2>&1 | head -1)
@@ -361,13 +403,15 @@ main() {
   install_packages
   install_awscli
   install_docker
+  install_kiro_cli
   install_node
   setup_shell
   setup_dotfiles
   install_anaconda
   verify_installations
-  remind_agent_skills_manual_install
   log "Bootstrap complete. Changes for the docker group, shell, and conda take effect in a new session."
+  remind_agent_skills_manual_install
+  show_post_install_reminders
 }
 
 main "$@"
