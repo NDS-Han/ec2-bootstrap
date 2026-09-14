@@ -322,6 +322,29 @@ setup_shell() {
   fi
 }
 
+enable_auto_zsh() {
+  if [[ "$INSTALL_ZSH" != "true" ]] || ! have zsh; then
+    return
+  fi
+
+  # chsh only affects new login shells. Interactive bash sessions spawned
+  # directly (e.g. IDE/remote terminals) are handed over to zsh instead.
+  local marker="# >>> bootstrap auto-zsh >>>"
+  if ! grep -qF "$marker" "$HOME/.bashrc" 2>/dev/null; then
+    log "Adding auto-zsh hook to ~/.bashrc..."
+    cat >> "$HOME/.bashrc" <<'EOF'
+
+# >>> bootstrap auto-zsh >>>
+# Hand interactive bash sessions over to zsh (e.g. terminals that spawn bash directly).
+if [[ $- == *i* && -x "$(command -v zsh)" ]]; then
+  export SHELL="$(command -v zsh)"
+  exec zsh -l
+fi
+# <<< bootstrap auto-zsh <<<
+EOF
+  fi
+}
+
 setup_dotfiles() {
   if [[ -z "$DOTFILES_REPO" ]]; then
     return
@@ -464,10 +487,17 @@ main() {
   setup_shell
   setup_dotfiles
   install_anaconda
+  enable_auto_zsh
   verify_installations
   log "Bootstrap complete. Changes for the docker group, shell, and conda take effect in a new session."
   remind_agent_skills_manual_install
   show_post_install_reminders
+
+  # Switch the current session to zsh when running interactively.
+  if [[ "$INSTALL_ZSH" == "true" ]] && have zsh && [[ -t 0 && -t 1 ]] && [[ -z "${BOOTSTRAP_NO_EXEC_ZSH:-}" ]]; then
+    log "Switching to zsh..."
+    exec zsh -l
+  fi
 }
 
 main "$@"
