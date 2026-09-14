@@ -19,7 +19,7 @@ NODE_VERSION="20"          # NodeSource LTS version
 DOTFILES_REPO="git@github.com:NDS-Han/ec2-bootstrap.git"
 DOTFILES_INSTALL_SCRIPT="" # Path to an install script inside the dotfiles repo (e.g., install.sh)
 INSTALL_ANACONDA=true
-ANACONDA_INSTALLER_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+ANACONDA_INSTALLER_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-$(uname -m).sh"
 # Replace the URL above with the Anaconda installer URL to install the full Anaconda distribution.
 ANACONDA_PREFIX="$HOME/miniconda3"
 CONDA_PYTHON_VERSION="3.12"  # Leave empty to skip installing a specific Python in the base environment.
@@ -54,13 +54,61 @@ install_packages() {
   case "$pkg_mgr" in
     dnf|yum)
       sudo "$pkg_mgr" update -y
-      sudo "$pkg_mgr" install -y $PACKAGES
       ;;
     apt)
       sudo apt-get update -y
-      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $PACKAGES
       ;;
   esac
+
+  local pkg
+  for pkg in $PACKAGES; do
+    case "$pkg_mgr" in
+      dnf|yum)
+        if ! sudo "$pkg_mgr" install -y "$pkg"; then
+          log "WARNING: failed to install package '$pkg' — continuing."
+        fi
+        ;;
+      apt)
+        if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
+          log "WARNING: failed to install package '$pkg' — continuing."
+        fi
+        ;;
+    esac
+  done
+}
+
+install_fastfetch() {
+  if have fastfetch; then
+    log "fastfetch is already installed."
+    return
+  fi
+
+  local arch
+  case "$(uname -m)" in
+    x86_64)        arch="amd64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      log "Unsupported architecture for fastfetch: $(uname -m); skipping."
+      return
+      ;;
+  esac
+
+  log "Installing fastfetch from GitHub releases (linux-${arch})..."
+  local tmp
+  tmp=$(mktemp -d)
+  curl -fsSL "https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-${arch}-polyfilled.tar.gz" -o "$tmp/fastfetch.tar.gz"
+  tar -xzf "$tmp/fastfetch.tar.gz" -C "$tmp"
+
+  local bin
+  bin=$(find "$tmp" -type f -name fastfetch | head -1)
+  if [[ -z "$bin" ]]; then
+    log "Could not find fastfetch binary in the release archive; skipping."
+    rm -rf "$tmp"
+    return
+  fi
+
+  sudo install -m 0755 "$bin" /usr/local/bin/fastfetch
+  rm -rf "$tmp"
 }
 
 install_awscli() {
@@ -358,6 +406,13 @@ verify_installations() {
     fail=1
   fi
 
+  if have fastfetch; then
+    v=$(fastfetch --version 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "fastfetch:" "$v"
+  else
+    printf '  %-10s %-40s [SKIP] not installed\n' "fastfetch:" "—"
+  fi
+
   if [[ "$INSTALL_KIRO_CLI" == "true" ]]; then
     local kiro_bin
     kiro_bin=$(command -v kiro-cli 2>/dev/null || true)
@@ -401,6 +456,7 @@ verify_installations() {
 main() {
   log "Starting development environment bootstrap..."
   install_packages
+  install_fastfetch
   install_awscli
   install_docker
   install_kiro_cli
