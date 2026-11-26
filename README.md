@@ -2,6 +2,14 @@
 
 새 EC2 개발 서버를 한 번에 세팅하는 스크립트예요. 기본 개발 도구와 셸 설정에 더해, 에이전트 작업 환경(agent-work-kit: Devin CLI · Kiro CLI · Claude Code)까지 준비해요.
 
+## 작업 방식 한눈에 보기
+
+<p align="center"><img src="docs/agent-workflow.svg" alt="에이전트 작업 흐름" width="100%"></p>
+
+- **로컬(Mac):** 사용자는 claude.ai 대화(오케스트레이터)에 목표와 결정을 전하고, 오케스트레이터는 Chrome의 Claude in Chrome 확장으로 EC2의 Claude Code를 원격 조작해요. 머지와 배포는 Devin IDE가 해요.
+- **EC2:** tmux 안의 Claude Code가 작업을 배분하고, Devin CLI가 구현, Kiro가 교차 검토를 해요. 결과는 모두 `.agent-work/` 파일로 남고, guard hook이 push·merge·배포를 막아요.
+- **배포:** Devin IDE가 검토 → 머지 → dev 배포 → `DEPLOYED.md` 기록 순서로 진행해요. prod는 런북으로 따로 해요.
+
 ## 사용 순서
 
 ```bash
@@ -19,28 +27,39 @@ cd ec2-bootstrap
 | 기본 패키지 | git, curl, wget, jq, unzip, htop, tree, tmux, vim, zsh, make, gcc, fastfetch |
 | 개발 도구 | Docker(BuildKit), AWS CLI, Node.js, Miniconda(Python) |
 | 셸 | zsh, Oh My Zsh, Powerlevel10k, 자동완성·하이라이트 플러그인, dotfiles |
-| 에이전트 도구 | Kiro CLI, Devin CLI, Claude Code (`~/.local/bin`, PATH 자동 추가) |
+| 에이전트 도구 | Claude Code(필수), Kiro CLI · Devin CLI · OpenAI Codex CLI(선택) |
 | agent-work-kit | `~/agent-work-kit`에 복사 (작업 레포에는 별도로 설치) |
 
-## 설정 (bootstrap.sh 맨 위)
+## 설정 (bootstrap.sh 맨 위, 환경 변수로 덮어쓰기 가능)
+
+Claude Code는 필수라 항상 설치해요. 나머지 에이전트 도구는 선택이에요.
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `INSTALL_DEVIN_CLI` | `true` | Devin CLI 설치 |
-| `INSTALL_CLAUDE_CODE` | `true` | Claude Code 설치 |
+| `INSTALL_KIRO_CLI` | `ask` | Kiro CLI |
+| `INSTALL_DEVIN_CLI` | `ask` | Devin CLI. 설치 중 로그인 창을 띄우지 않아요. 설치 후 `devin`을 실행해 로그인해요 |
+| `INSTALL_CODEX_CLI` | `ask` | OpenAI Codex CLI(GPT, `npm i -g @openai/codex`). Node.js가 필요해요 |
 | `INSTALL_AGENT_KIT` | `true` | agent-work-kit를 `AGENT_KIT_DEST`에 복사 |
 | `AGENT_KIT_DEST` | `~/agent-work-kit` | 키트 복사 위치 |
 | `AGENT_KIT_REPO_URL` | (비어 있음) | 넣으면 그 레포를 클론하고 키트까지 설치해요 |
 | `AGENT_KIT_REPO_DIR` | `~/github/<레포 이름>` | 위 레포의 클론 위치 |
+
+값은 `true`(설치), `false`(건너뜀), `ask`(터미널이 있으면 물어봄, 없으면 건너뜀) 중 하나예요.
+
+```bash
+./bootstrap.sh                                          # 선택 도구는 하나씩 물어봐요
+INSTALL_DEVIN_CLI=true INSTALL_KIRO_CLI=false INSTALL_CODEX_CLI=false ./bootstrap.sh   # 묻지 않고 지정
+```
 
 로그인 정보, API 키, 토큰은 스크립트가 저장하지 않아요. 로그인은 설치 후 직접 해요.
 
 ## 설치 후 할 일
 
 ```bash
-devin            # Devin CLI 로그인 (브라우저 안내)
-kiro-cli login   # Kiro CLI 로그인
-claude           # Claude Code 로그인 후 /exit
+claude           # Claude Code 로그인 후 /exit (필수)
+devin            # Devin CLI 로그인 (설치한 경우)
+kiro-cli login   # Kiro CLI 로그인 (설치한 경우)
+codex            # OpenAI Codex CLI 로그인 (설치한 경우)
 ```
 
 작업 레포에 키트를 설치해요(`AGENT_KIT_REPO_URL`을 썼다면 이미 돼 있어요).
@@ -68,7 +87,7 @@ cd <작업 레포> && claude --remote-control "<이름>"
 
 ```bash
 exec zsh -l
-which tmux devin claude kiro-cli   # 4개 모두 경로가 나와야 해요
+which tmux claude devin kiro-cli codex   # 설치한 도구는 경로가 나와야 해요
 ls ~/agent-work-kit                # install.sh, bin/, hooks/ 등
 ```
 
