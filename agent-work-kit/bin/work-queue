@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# usage: work-queue <task...>
+# Starts Devin CLI implementation jobs (MAX_CONCURRENT at a time, in argument order).
+# After each DONE, starts review-task in the background unless AUTO_XREVIEW=0.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+if [ "$#" -gt 0 ]; then
+    TASKS=("$@")
+elif [ -n "${QUEUE_TASKS:-}" ]; then
+    # shellcheck disable=SC2206
+    TASKS=($QUEUE_TASKS)
+else
+    aw_die "usage: work-queue <task...> (or set QUEUE_TASKS)"
+fi
+
+for t in "${TASKS[@]}"; do
+    aw_require_task "$t"
+done
+
+LOG="$WORK_DIR/work-queue.log"
+mkdir -p "$WORK_DIR"
+log() { printf '%s %s\n' "$(date -u '+%F %T UTC')" "$*" | tee -a "$LOG"; }
+is_running() { aw_tmux_running "devin-$1" "$1"; }
+
+declare -A started reviewed
+# Resume after dispatcher restart: a STATUS means the task was already submitted.
+for t in "${TASKS[@]}"; do
+    [ -f "$WORK_DIR/$t/STATUS" ] && started[$t]=1
+    [ -f "$WORK_DIR/$t/XREVIEW.md" ] && reviewed[$t]=1
+done
+
+log "work-queue started (model=${DEVIN_RUN_MODEL:-$DEVIN_MODEL}, max $MAX_CONCURRENT): ${TASKS[*]}"
+
+while true; do
+    running_count=0
+    for t in "${TASKS[@]}"; do
+        if [ "${started[$t]:-}" = 1 ] && is_running "$t"; then
+            running_count=$((running_count + 1))
+        fi
+    done
+
+    for t in "${TASKS[@]}"; do
+        if [ -z "${started[$t]:-}" ] && [ "$running_count" -lt "$MAX_CONCURRENT" ]; then
+            log "start $t"
+            if "$AW_BIN_DIR/devin-run" "$t" "$WORK_DIR/$t/SPEC.md" >> "$LOG" 2>&1; then
+                started[$t]=1
+            else
+                started[$t]=failed
+                reviewed[$t]=skip
+                log "start $t FAILED"
+            fi
+            running_count=$((running_count + 1))
+            sleep "${QUEUE_START_STAGGER_SEC:-15}"
+        fi
+    done
+
+    for t in "${TASKS[@]}"; do
+        [ "${started[$t]:-}" = 1 ] || continue
+        is_running "$t" && continue
+        [ -z "${reviewed[$t]:-}" ] || continue
+
+        if [ -f "$WORK_DIR/$t/DONE" ]; then
+            if aw_truthy "$AUTO_XREVIEW"; then
+                "$AW_BIN_DIR/review-task" "$t" >> "$LOG" 2>&1 &
+                log "$t DONE -> review started"
+            else
+                printf 'XREVIEW: pending — automatic review disabled (AUTO_XREVIEW=0).\n' > "$WORK_DIR/$t/XREVIEW.md"
+                log "$t DONE -> automatic review disabled"
+            fi
+            reviewed[$t]=1
+        else
+            reviewed[$t]=skip
+            log "$t ended without DONE: $(cut -c1-150 "$WORK_DIR/$t/STATUS" 2>/dev/null || printf 'no STATUS')"
+        fi
+    done
+
+    all=1
+    for t in "${TASKS[@]}"; do
+        [ -z "${reviewed[$t]:-}" ] && all=0
+    done
+    if [ "$all" = 1 ]; then
+        wait || true
+        break
+    fi
+    sleep 60
+done
+
+log "work-queue finished"

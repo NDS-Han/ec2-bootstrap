@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# usage: watch <task> — print STATUS and follow the task's agent logs.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+cat "$WORK_DIR/$TASK/STATUS" 2>/dev/null || true
+exec tail -n 40 -F "$WORK_DIR/$TASK"/kiro.log "$WORK_DIR/$TASK"/devin.log 2>/dev/null

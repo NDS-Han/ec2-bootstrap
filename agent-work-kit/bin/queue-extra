@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# usage: queue-extra <task>
+# Waits until fewer than MAX_CONCURRENT Devin jobs are running, starts one task, waits for it,
+# and then performs the configured post-DONE review action.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+LOG="$WORK_DIR/work-queue.log"
+mkdir -p "$WORK_DIR"
+log() { printf '%s [extra] %s\n' "$(date -u '+%F %T UTC')" "$*" | tee -a "$LOG"; }
+
+running_count() {
+    local count=0 session task
+    while IFS= read -r session; do
+        case "$session" in
+            devin-*)
+                task="${session#devin-}"
+                if grep -q '^running' "$WORK_DIR/$task/STATUS" 2>/dev/null; then
+                    count=$((count + 1))
+                fi
+                ;;
+        esac
+    done <<EOF_SESSIONS
+$(tmux ls -F '#S' 2>/dev/null || true)
+EOF_SESSIONS
+    printf '%s\n' "$count"
+}
+
+while [ "$(running_count)" -ge "$MAX_CONCURRENT" ]; do
+    sleep 60
+done
+
+log "start $TASK"
+"$AW_BIN_DIR/devin-run" "$TASK" "$WORK_DIR/$TASK/SPEC.md" >> "$LOG" 2>&1 || {
+    log "start $TASK FAILED"
+    exit 1
+}
+
+sleep 30
+while aw_tmux_running "devin-$TASK" "$TASK"; do
+    sleep 60
+done
+
+if [ ! -f "$WORK_DIR/$TASK/DONE" ]; then
+    log "$TASK ended without DONE"
+    exit 0
+fi
+
+log "$TASK DONE -> review"
+"$AW_BIN_DIR/review-task" "$TASK" >> "$LOG" 2>&1 || true
+log "$TASK review finished"

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# usage: review-task <task>
+# Runs a read-only Kiro review for a DONE implementation task and writes <task>/XREVIEW.md.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+TASK_DIR="$(aw_task_dir "$TASK")"
+mkdir -p "$TASK_DIR"
+
+if aw_list_contains "$TASK" "$CLAUDE_REVIEW_TASKS"; then
+    printf 'XREVIEW: pending — to be reviewed by Claude Code (diff-only).\n' > "$TASK_DIR/XREVIEW.md"
+    echo "review-task: $TASK marked for Claude Code review"
+    exit 0
+fi
+
+if ! aw_truthy "$AUTO_XREVIEW"; then
+    printf 'XREVIEW: pending — automatic review disabled (AUTO_XREVIEW=0).\n' > "$TASK_DIR/XREVIEW.md"
+    echo "review-task: automatic review disabled for $TASK"
+    exit 0
+fi
+
+if ! command -v "$KIRO_BIN" >/dev/null 2>&1; then
+    printf 'XREVIEW: pending — Kiro CLI binary is not installed or not on PATH.\n' > "$TASK_DIR/XREVIEW.md"
+    echo "review-task: kiro-cli missing; wrote pending marker" >&2
+    exit 0
+fi
+
+WT="$WORK_DIR/wt/$TASK"
+[ -d "$WT" ] || aw_die "missing worktree $WT"
+BR="$(aw_spec_branch "$TASK" 2>/dev/null || true)"
+BASE="$(aw_spec_base "$TASK" 2>/dev/null || printf '%s' "$BASE_BRANCH")"
+[ -n "$BR" ] || BR="$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '<branch>')"
+
+PROMPT="REVIEW ONLY — no code changes, no commits, no pushes. Read $WORK_DIR/AGENTS.md, $WORK_DIR/REVIEW.md, $TASK_DIR/SPEC.md, $TASK_DIR/REPORT.md, and $TASK_DIR/HANDOFF.md. Review the diff $BASE...$BR in this worktree, run targeted tests, check every acceptance point and hard rule. Write $TASK_DIR/XREVIEW.md: line 1 'Model: claude-opus-5.5 · Effort: high · Agent: kiro (review)', verdict APPROVE or CHANGES REQUESTED, numbered findings with file:line, Korean summary on top."
+
+set +e
+if command -v timeout >/dev/null 2>&1; then
+    (cd "$WT" && timeout "$REVIEW_TIMEOUT_SEC" "$KIRO_BIN" chat --agent "$KIRO_AGENT" --effort high --no-interactive --trust-all-tools "$PROMPT") \
+        > "$TASK_DIR/kiro-review.log" 2>&1
+else
+    (cd "$WT" && "$KIRO_BIN" chat --agent "$KIRO_AGENT" --effort high --no-interactive --trust-all-tools "$PROMPT") \
+        > "$TASK_DIR/kiro-review.log" 2>&1
+fi
+rc=$?
+set -e
+
+if [ ! -s "$TASK_DIR/XREVIEW.md" ]; then
+    reason=$(grep -m1 -oE 'usage limit[^(]*|Error:[^(]{0,120}' "$TASK_DIR/kiro-review.log" 2>/dev/null || printf 'no XREVIEW written')
+    printf 'XREVIEW: pending — Kiro review did not complete (rc=%s: %s). Re-run review-task when available.\n' "$rc" "$reason" > "$TASK_DIR/XREVIEW.md"
+fi
+
+echo "review-task: finished $TASK (rc=$rc)"

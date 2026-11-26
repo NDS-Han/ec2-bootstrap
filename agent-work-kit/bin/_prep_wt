@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# internal: _prep_wt <task>
+# Creates ${WORK_DIR}/wt/<task> from the SPEC's "**Branch:** `X` from **`Y`**" line,
+# unsets upstream, applies optional dependency symlinks, and prints the worktree path.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+SPEC="$(aw_spec_file "$TASK")"
+[ -f "$SPEC" ] || aw_die "missing $SPEC"
+
+BR="$(aw_spec_branch "$TASK")"
+BASE="$(aw_spec_base "$TASK")"
+if [ -z "$BR" ] || [ -z "$BASE" ]; then
+    aw_die "cannot parse branch/base from $SPEC"
+fi
+
+WT="$WORK_DIR/wt/$TASK"
+mkdir -p "$WORK_DIR/wt"
+
+cd "$REPO_DIR"
+if git remote get-url origin >/dev/null 2>&1; then
+    if ! git fetch -q origin; then
+        echo "agent-work: warning: git fetch origin failed; continuing with local refs" >&2
+    fi
+fi
+
+if [ ! -d "$WT" ]; then
+    if git show-ref -q --verify "refs/heads/$BR"; then
+        git worktree add -q "$WT" "$BR"
+    else
+        git worktree add -q --no-track -b "$BR" "$WT" "$BASE"
+    fi
+fi
+
+git -C "$WT" branch --unset-upstream >/dev/null 2>&1 || true
+
+# Optional dependency links. WORKTREE_LINKS is a space-separated list of src[:dst]
+# entries. Relative src is resolved in REPO_DIR; dst is always relative to the worktree.
+# Use this for existing virtualenvs or node_modules, for example:
+#   WORKTREE_LINKS="app/.venv app/ui/node_modules:app/ui/node_modules"
+# Paths must not contain spaces.
+if [ -n "${WORKTREE_LINKS:-}" ]; then
+    # shellcheck disable=SC2086
+    for link in $WORKTREE_LINKS; do
+        src="${link%%:*}"
+        dst="${link#*:}"
+        case "$src" in
+            /*) src_path="$src" ;;
+            *) src_path="$REPO_DIR/$src" ;;
+        esac
+        dst="${dst#/}"
+        dst_path="$WT/$dst"
+        if [ -e "$src_path" ] && [ -d "$(dirname -- "$dst_path")" ]; then
+            if [ -L "$dst_path" ] || [ ! -e "$dst_path" ]; then
+                ln -sfn "$src_path" "$dst_path"
+            fi
+        fi
+    done
+fi
+
+printf '%s\n' "$WT"

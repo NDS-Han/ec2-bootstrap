@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# usage: after-done <dependency-task> <task>
+# Waits for <dependency-task>/DONE, then starts <task> through queue-extra.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+DEP="${1:?dependency task}"
+TASK="${2:?task}"
+aw_require_task "$DEP"
+aw_require_task "$TASK"
+LOG="$WORK_DIR/work-queue.log"
+mkdir -p "$WORK_DIR"
+
+until [ -f "$WORK_DIR/$DEP/DONE" ]; do
+    if [ -f "$WORK_DIR/$DEP/BLOCKED" ]; then
+        printf '%s [extra] %s not started: dependency %s BLOCKED\n' "$(date -u '+%F %T UTC')" "$TASK" "$DEP" >> "$LOG"
+        exit 1
+    fi
+    sleep "$DEPENDENCY_POLL_SEC"
+done
+
+exec "$AW_BIN_DIR/queue-extra" "$TASK"

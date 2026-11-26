@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# usage: kiro-run <task> [high|max]
+# Starts a Kiro CLI job in tmux session kiro-<task>. Explicit default effort: high.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+EFFORT="${2:-$KIRO_EFFORT}"
+AGENT="$KIRO_AGENT"
+
+case "$EFFORT" in
+    high|medium|low) ;;
+    max)
+        if ! aw_truthy "$KIRO_ALLOW_MAX"; then
+            aw_die "Kiro effort MAX requires explicit approval (set KIRO_ALLOW_MAX=1 for this approved run)"
+        fi
+        AGENT="${KIRO_AGENT_MAX:-$KIRO_AGENT}"
+        ;;
+    *) aw_die "unsupported Kiro effort '$EFFORT' (use high unless explicitly approved otherwise)" ;;
+esac
+
+SPEC="$(aw_spec_file "$TASK")"
+[ -f "$SPEC" ] || aw_die "missing $SPEC"
+WT="$("$AW_BIN_DIR/_prep_wt" "$TASK")"
+TASK_DIR="$(aw_task_dir "$TASK")"
+mkdir -p "$TASK_DIR"
+
+PROMPT="Read $WORK_DIR/AGENTS.md, then implement $SPEC exactly. Your git worktree is already created on the task branch: $WT — work ONLY there (do not create another worktree, do not touch the main checkout). Write all required outputs into $TASK_DIR/. First line of REPORT.md: 'Model: claude-opus-5.5 · Effort: $EFFORT · Agent: $AGENT'."
+RESUME_PROMPT="Continue the SPEC $SPEC until DONE or BLOCKED. Work only in $WT; write outputs to $TASK_DIR/."
+
+SESSION="kiro-$TASK"
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    aw_die "tmux session $SESSION already exists"
+fi
+
+# shellcheck disable=SC2016  # expansion is intentionally deferred to the tmux child shell
+INNER='exec "$AW_KIRO_BIN" chat --agent "$AW_KIRO_AGENT" --effort "$AW_KIRO_EFFORT" --no-interactive --trust-all-tools "$AW_INITIAL_PROMPT"'
+# shellcheck disable=SC2016  # expansion is intentionally deferred to resume shells
+RESUME_INNER='exec "$AW_KIRO_BIN" chat --agent "$AW_KIRO_AGENT" --effort "$AW_KIRO_EFFORT" --no-interactive --trust-all-tools --resume "$AW_RESUME_PROMPT"'
+JOB_CMD="$(aw_shell_join "$AW_BIN_DIR/_job" kiro "$TASK" -- bash -lc "$INNER")"
+TMUX_CMD="bash -lc $(printf '%q' "$JOB_CMD"); echo '[job finished — this session closes in 10 minutes]'; sleep 600"
+
+tmux new-session -d \
+    -e "RESUME_CMD=$RESUME_INNER" \
+    -e "MAX_ROUNDS=$MAX_ROUNDS" \
+    -e "AW_KIRO_AGENT=$AGENT" \
+    -e "AW_KIRO_BIN=$KIRO_BIN" \
+    -e "AW_KIRO_EFFORT=$EFFORT" \
+    -e "AW_INITIAL_PROMPT=$PROMPT" \
+    -e "AW_RESUME_PROMPT=$RESUME_PROMPT" \
+    -s "$SESSION" -c "$WT" \
+    "$TMUX_CMD"
+
+printf 'worktree %s\n' "$WT"
+printf 'started tmux session %s (agent=%s effort=%s). Watch: tmux attach -r -t %s  |  %s/bin/watch %s\n' \
+    "$SESSION" "$AGENT" "$EFFORT" "$SESSION" "$WORK_DIR" "$TASK"

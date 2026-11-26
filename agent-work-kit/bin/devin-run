@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# usage: devin-run <task> <prompt-file> | devin-run <task> -- <prompt...>
+# Starts a Devin CLI job in tmux session devin-<task>. Explicit default model: swe-2-1-max.
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+TASK="${1:?task}"
+aw_require_task "$TASK"
+shift
+
+MODEL="${DEVIN_RUN_MODEL:-$DEVIN_MODEL}"
+case "$MODEL" in
+    *-low) EFFORT="low" ;;
+    *-medium) EFFORT="medium" ;;
+    *-high) EFFORT="high" ;;
+    *-xhigh) EFFORT="xhigh" ;;
+    *-max) EFFORT="max" ;;
+    *) EFFORT="default" ;;
+esac
+
+if [ "${1:-}" = "--" ]; then
+    shift
+    [ "$#" -gt 0 ] || aw_die "missing prompt after --"
+    P="$*"
+else
+    [ -n "${1:-}" ] || aw_die "usage: devin-run <task> <prompt-file> | devin-run <task> -- <prompt...>"
+    [ -f "$1" ] || aw_die "missing prompt file: $1"
+    P="$(cat -- "$1")"
+fi
+
+WT="$("$AW_BIN_DIR/_prep_wt" "$TASK")"
+TASK_DIR="$(aw_task_dir "$TASK")"
+mkdir -p "$TASK_DIR"
+
+DEVIN_CONFIG="${DEVIN_CONFIG:-$WORK_DIR/devin/config.json}"
+[ -f "$DEVIN_CONFIG" ] || aw_die "missing Devin config $DEVIN_CONFIG (run install.sh first)"
+
+PROMPT="Read $WORK_DIR/AGENTS.md first and follow it. Your git worktree is already created on the task branch: $WT — work ONLY there (do not create another worktree, do not touch the main checkout). Task folder: $TASK_DIR. First line of any REPORT.md: 'Model: $MODEL · Effort: $EFFORT · Agent: devin-cli'. $P"
+RESUME_PROMPT="Continue the task until $TASK_DIR/DONE or BLOCKED exists. Work only in $WT. Write required outputs to $TASK_DIR."
+
+SESSION="devin-$TASK"
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    aw_die "tmux session $SESSION already exists"
+fi
+
+# The prompt travels through the tmux environment rather than nested shell quoting.
+# _job invokes bash -lc with this static one-line command; the child shell expands the variables.
+# shellcheck disable=SC2016  # expansion is intentionally deferred to the tmux child shell
+INNER='exec "$AW_DEVIN_BIN" --config "$AW_DEVIN_CONFIG" --model "$AW_DEVIN_MODEL" --permission-mode "$AW_DEVIN_PERMISSION_MODE" --respect-workspace-trust false --verbosity "$AW_DEVIN_VERBOSITY" --export "$AW_EXPORT_FILE" -p "$AW_INITIAL_PROMPT"'
+# shellcheck disable=SC2016  # expansion is intentionally deferred to resume shells
+RESUME_INNER='exec "$AW_DEVIN_BIN" --config "$AW_DEVIN_CONFIG" --model "$AW_DEVIN_MODEL" --permission-mode "$AW_DEVIN_PERMISSION_MODE" --respect-workspace-trust false --verbosity "$AW_DEVIN_VERBOSITY" -c -p "$AW_RESUME_PROMPT"'
+JOB_CMD="$(aw_shell_join "$AW_BIN_DIR/_job" devin "$TASK" -- bash -lc "$INNER")"
+TMUX_CMD="bash -lc $(printf '%q' "$JOB_CMD"); echo '[job finished — this session closes in 10 minutes]'; sleep 600"
+
+tmux new-session -d \
+    -e "RESUME_CMD=$RESUME_INNER" \
+    -e "MAX_ROUNDS=$MAX_ROUNDS" \
+    -e "AW_DEVIN_CONFIG=$DEVIN_CONFIG" \
+    -e "AW_DEVIN_BIN=$DEVIN_BIN" \
+    -e "AW_DEVIN_MODEL=$MODEL" \
+    -e "AW_DEVIN_PERMISSION_MODE=$DEVIN_PERMISSION_MODE" \
+    -e "AW_DEVIN_VERBOSITY=$DEVIN_VERBOSITY" \
+    -e "AW_EXPORT_FILE=$TASK_DIR/devin.export.md" \
+    -e "AW_INITIAL_PROMPT=$PROMPT" \
+    -e "AW_RESUME_PROMPT=$RESUME_PROMPT" \
+    -s "$SESSION" -c "$WT" \
+    "$TMUX_CMD"
+
+printf 'worktree %s\n' "$WT"
+printf 'started tmux session %s (model=%s). Watch: tmux attach -r -t %s  |  %s/bin/watch %s\n' \
+    "$SESSION" "$MODEL" "$SESSION" "$WORK_DIR" "$TASK"

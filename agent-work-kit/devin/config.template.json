@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "permissions": {
+    "deny": [
+      "Exec(git push)",
+      "Exec(helm upgrade)",
+      "Exec(helm install)",
+      "Exec(helm uninstall)",
+      "Exec(helm rollback)",
+      "Exec(kubectl apply)",
+      "Exec(kubectl delete)",
+      "Exec(kubectl patch)",
+      "Exec(kubectl edit)",
+      "Exec(terraform apply)",
+      "Exec(terraform destroy)",
+      "Exec(docker system prune)",
+      "Exec(docker image prune)",
+      "Exec(docker volume prune)",
+      "Exec(docker builder prune)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "exec|edit|write|notebook_edit|str_replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__HOOK_PATH_JSON__",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "shell": {
+    "setup_complete": true
+  },
+  "theme_mode": "dark"
+}

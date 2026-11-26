@@ -26,6 +26,14 @@ CONDA_PYTHON_VERSION="3.12"  # Leave empty to skip installing a specific Python 
 INSTALL_ZSH=true
 INSTALL_P10K=true
 
+# Agent work environment (agent-work-kit: Devin CLI + Kiro CLI + Claude Code orchestration)
+INSTALL_DEVIN_CLI=true
+INSTALL_CLAUDE_CODE=true
+INSTALL_AGENT_KIT=true
+AGENT_KIT_DEST="$HOME/agent-work-kit"   # where the kit is copied on the EC2 host
+AGENT_KIT_REPO_URL=""                   # optional: repo to clone and install the kit into (e.g. git@github.com:org/repo.git)
+AGENT_KIT_REPO_DIR=""                   # optional: clone destination (default: ~/github/<repo-name>)
+
 log() { printf '\033[1;34m[bootstrap]\033[0m %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -192,6 +200,106 @@ install_kiro_cli() {
   curl -fsSL https://cli.kiro.dev/install | bash
 }
 
+install_devin_cli() {
+  if [[ "$INSTALL_DEVIN_CLI" != "true" ]]; then
+    return
+  fi
+
+  if have devin || [[ -x "$HOME/.local/bin/devin" ]]; then
+    log "Devin CLI is already installed."
+    return
+  fi
+
+  log "Installing Devin CLI..."
+  if ! curl -fsSL https://cli.devin.ai/install.sh | bash; then
+    log "WARNING: Devin CLI installation failed — continuing."
+  fi
+}
+
+install_claude_code() {
+  if [[ "$INSTALL_CLAUDE_CODE" != "true" ]]; then
+    return
+  fi
+
+  if have claude || [[ -x "$HOME/.local/bin/claude" ]]; then
+    log "Claude Code is already installed."
+    return
+  fi
+
+  log "Installing Claude Code..."
+  if ! curl -fsSL https://claude.ai/install.sh | bash; then
+    log "WARNING: Claude Code installation failed — continuing."
+  fi
+}
+
+ensure_local_bin_path() {
+  # Devin CLI, Kiro CLI and Claude Code install into ~/.local/bin; make sure new shells find them.
+  local marker="# >>> bootstrap local-bin >>>"
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [[ -f "$rc" ]] || continue
+    if ! grep -qF "$marker" "$rc"; then
+      log "Adding ~/.local/bin to PATH in $(basename "$rc")..."
+      cat >> "$rc" <<'EOF'
+
+# >>> bootstrap local-bin >>>
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
+# <<< bootstrap local-bin <<<
+EOF
+    fi
+  done
+}
+
+setup_agent_work_kit() {
+  if [[ "$INSTALL_AGENT_KIT" != "true" ]]; then
+    return
+  fi
+
+  # Kit source: next to this script, or inside the dotfiles clone (curl | bash case).
+  local src=""
+  local script_dir
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P || true)"
+  if [[ -n "$script_dir" && -f "$script_dir/agent-work-kit/install.sh" ]]; then
+    src="$script_dir/agent-work-kit"
+  elif [[ -f "$HOME/dotfiles/agent-work-kit/install.sh" ]]; then
+    src="$HOME/dotfiles/agent-work-kit"
+  fi
+
+  if [[ -z "$src" ]]; then
+    log "WARNING: agent-work-kit not found next to bootstrap.sh or in ~/dotfiles; skipping."
+    return
+  fi
+
+  if [[ "$(cd "$src" && pwd -P)" != "$(mkdir -p "$AGENT_KIT_DEST" && cd "$AGENT_KIT_DEST" && pwd -P)" ]]; then
+    log "Copying agent-work-kit to $AGENT_KIT_DEST..."
+    cp -R "$src/." "$AGENT_KIT_DEST/"
+    chmod +x "$AGENT_KIT_DEST"/install.sh "$AGENT_KIT_DEST"/bin/* 2>/dev/null || true
+  fi
+
+  if [[ -z "$AGENT_KIT_REPO_URL" ]]; then
+    return
+  fi
+
+  local repo_dir="$AGENT_KIT_REPO_DIR"
+  if [[ -z "$repo_dir" ]]; then
+    repo_dir="$HOME/github/$(basename "${AGENT_KIT_REPO_URL%.git}")"
+  fi
+
+  if [[ ! -d "$repo_dir/.git" ]]; then
+    log "Cloning $AGENT_KIT_REPO_URL into $repo_dir..."
+    mkdir -p "$(dirname "$repo_dir")"
+    if ! git clone "$AGENT_KIT_REPO_URL" "$repo_dir"; then
+      log "WARNING: clone failed (check SSH key / access); run the kit install manually later."
+      return
+    fi
+  fi
+
+  log "Installing agent-work-kit into $repo_dir..."
+  if ! "$AGENT_KIT_DEST/install.sh" "$repo_dir"; then
+    log "WARNING: agent-work-kit install failed — run it manually: $AGENT_KIT_DEST/install.sh $repo_dir"
+  fi
+}
+
 install_node() {
   if [[ "$INSTALL_NODE" != "true" ]]; then
     return
@@ -230,6 +338,15 @@ remind_agent_skills_manual_install() {
 show_post_install_reminders() {
   log "❗ To restart your SSH development session, run:"
   log "  pkill -f 'vscode-server|cursor-server|devin-server'"
+
+  if [[ "$INSTALL_AGENT_KIT" == "true" ]]; then
+    log "❗ Agent tools need a manual login once (in a new shell): devin, kiro-cli login, claude"
+    log "❗ Install the agent-work-kit into a repo (if not done via AGENT_KIT_REPO_URL):"
+    log "  $AGENT_KIT_DEST/install.sh <path-to-repo>   # then edit <repo>/.agent-work/agent-work.env"
+    log "❗ Always run Claude Code inside tmux so it survives IDE restarts / SSH drops:"
+    log "  tmux new -s claude-main"
+    log "  cd <path-to-repo> && claude --remote-control \"<name>\""
+  fi
 
   if [[ "$INSTALL_ANACONDA" == "true" ]]; then
     log "❗ If Conda initialization did not take effect, run:"
@@ -470,6 +587,39 @@ verify_installations() {
     fi
   fi
 
+  if have tmux; then
+    v=$(tmux -V 2>&1 | head -1)
+    printf '  %-10s %-40s [OK]\n' "tmux:" "$v"
+  else
+    printf '  %-10s %-40s [FAIL] not installed\n' "tmux:" "—"
+    fail=1
+  fi
+
+  local tool bin
+  for tool in devin claude; do
+    if [[ "$tool" == "devin" && "$INSTALL_DEVIN_CLI" != "true" ]]; then continue; fi
+    if [[ "$tool" == "claude" && "$INSTALL_CLAUDE_CODE" != "true" ]]; then continue; fi
+    bin=$(command -v "$tool" 2>/dev/null || true)
+    if [[ -z "$bin" && -x "$HOME/.local/bin/$tool" ]]; then
+      bin="$HOME/.local/bin/$tool"
+    fi
+    if [[ -n "$bin" ]]; then
+      v=$("$bin" --version 2>&1 | head -1)
+      printf '  %-10s %-40s [OK]\n' "$tool:" "$v"
+    else
+      printf '  %-10s %-40s [FAIL] not installed\n' "$tool:" "—"
+      fail=1
+    fi
+  done
+
+  if [[ "$INSTALL_AGENT_KIT" == "true" ]]; then
+    if [[ -x "$AGENT_KIT_DEST/install.sh" ]]; then
+      printf '  %-10s %-40s [OK]\n' "agent-kit:" "$AGENT_KIT_DEST"
+    else
+      printf '  %-10s %-40s [SKIP] not copied\n' "agent-kit:" "—"
+    fi
+  fi
+
   if [[ "$fail" -ne 0 ]]; then
     log "Verification failed. Please fix the missing tools and re-run."
     exit 1
@@ -483,11 +633,15 @@ main() {
   install_awscli
   install_docker
   install_kiro_cli
+  install_devin_cli
+  install_claude_code
   install_node
   setup_shell
   setup_dotfiles
+  setup_agent_work_kit
   install_anaconda
   enable_auto_zsh
+  ensure_local_bin_path
   verify_installations
   log "Bootstrap complete. Changes for the docker group, shell, and conda take effect in a new session."
   remind_agent_skills_manual_install

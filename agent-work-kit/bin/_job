@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# internal: _job <agent> <task> -- <command...>
+# Runs inside tmux, tees output to <task>/<agent>.log, maintains STATUS, and resumes
+# headless CLIs until DONE/BLOCKED exists (max MAX_ROUNDS rounds).
+set -euo pipefail
+
+# shellcheck source=bin/_common.sh
+# shellcheck disable=SC1091  # resolved relative to the runtime script location
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/_common.sh"
+
+AGENT="${1:?agent}"
+TASK="${2:?task}"
+[ "${3:-}" = "--" ] || aw_die "usage: _job <agent> <task> -- <command...>"
+shift 3
+[ "$#" -gt 0 ] || aw_die "missing command"
+aw_require_task "$TASK"
+
+D="$(aw_task_dir "$TASK")"
+LOG="$D/$AGENT.log"
+ST="$D/STATUS"
+mkdir -p "$D"
+
+status() {
+    local last
+    last=$(grep -v '^[[:space:]]*$' "$LOG" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-160 || true)
+    printf '%s | agent=%s | last: %s | %s\n' "$1" "$AGENT" "$last" "$(date '+%F %T %Z')" > "$ST"
+}
+
+printf '=== %s task=%s start=%s cwd=%s\n' "$AGENT" "$TASK" "$(date -Is)" "$PWD" > "$LOG"
+{
+    printf '=== cmd:'
+    printf ' %q' "$@"
+    printf '\n'
+} >> "$LOG"
+
+touch "$D/.running"
+status running
+(
+    while sleep 10; do
+        [ -f "$D/.running" ] || break
+        status running
+    done
+) &
+MONPID=$!
+PT=""
+
+if [ -n "${PROGRESS_SRC:-}" ] && [ -f "$PROGRESS_SRC" ]; then
+    (
+        tail -n0 -F "$PROGRESS_SRC" 2>/dev/null \
+            | grep --line-buffered -E "${PROGRESS_RE:-Permission decision|command=|Tool rejected|hook}" \
+            | sed -u -E 's/^([0-9T:.-]+)Z?.*(Permission decision for tool [a-z_]+[^ ]*|command=.*|Tool rejected.*|hook[^ ]* .*)$/[progress] \1 \2/' >> "$LOG"
+    ) & PT=$!
+fi
+
+run_and_log() {
+    local first_rc
+    if command -v stdbuf >/dev/null 2>&1; then
+        stdbuf -oL -eL "$@" 2>&1 | tee -a "$LOG"
+        first_rc=${PIPESTATUS[0]}
+    else
+        "$@" 2>&1 | tee -a "$LOG"
+        first_rc=${PIPESTATUS[0]}
+    fi
+    return "$first_rc"
+}
+
+set +e
+run_and_log "$@"
+rc=$?
+set -e
+
+round=0
+while [ ! -f "$D/DONE" ] && [ ! -f "$D/BLOCKED" ] && [ -n "${RESUME_CMD:-}" ] && [ "$round" -lt "$MAX_ROUNDS" ]; do
+    round=$((round + 1))
+    printf '=== %s resume round %s/%s %s (no DONE/BLOCKED yet)\n' "$AGENT" "$round" "$MAX_ROUNDS" "$(date -Is)" >> "$LOG"
+    status "running(resume $round)"
+    set +e
+    run_and_log bash -lc "$RESUME_CMD"
+    rc=$?
+    set -e
+done
+
+if [ -n "$PT" ]; then
+    kill "$PT" 2>/dev/null || true
+fi
+kill "$MONPID" 2>/dev/null || true
+rm -f "$D/.running"
+printf '=== %s end=%s rc=%s rounds=%s\n' "$AGENT" "$(date -Is)" "$rc" "$round" >> "$LOG"
+
+if [ -f "$D/DONE" ]; then
+    status "done"
+elif [ -f "$D/BLOCKED" ]; then
+    status blocked
+else
+    status "stopped(no DONE, rc=$rc, resume rounds=$round)"
+fi
+
+printf '\n=== FINAL STATUS: %s\n' "$(cat "$ST")"
+for f in REPORT.md REVIEW_RESULT.md XREVIEW.md REVIEW_BY_CLAUDE.md; do
+    if [ -f "$D/$f" ]; then
+        printf '%s\n' "--- $f (head)"
+        head -15 "$D/$f" || true
+    fi
+done

@@ -1,0 +1,31 @@
+{
+  "name": "__KIRO_AGENT_JSON__",
+  "description": "<PROJECT> implementer (Opus, intended effort: high). Follows agent-work AGENTS.md; guard hook blocks destructive operations.",
+  "prompt": "You implement one task for <PROJECT>. Before anything else read __WORK_DIR_JSON__/AGENTS.md and the SPEC.md you are given, and follow them exactly. Intended effort for this agent: high. Put 'Model: claude-opus-5.5 · Effort: high · Agent: __KIRO_AGENT_JSON__' as the first line of every REPORT.md. Never use effort MAX unless the user explicitly approves it for this task.",
+  "model": "claude-opus-5.5",
+  "tools": ["read", "write", "shell", "thinking", "todo"],
+  "resources": ["file://__KIRO_STEERING_FILE_JSON__"],
+  "hooks": [
+    {
+      "name": "agent-work-guard-shell",
+      "trigger": "PreToolUse",
+      "matcher": "shell",
+      "action": {
+        "type": "command",
+        "command": "__HOOK_PATH_JSON__"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "agent-work-guard-write",
+      "trigger": "PreToolUse",
+      "matcher": "write",
+      "action": {
+        "type": "command",
+        "command": "__HOOK_PATH_JSON__"
+      },
+      "timeout": 10
+    }
+  ],
+  "includeMcpJson": false
+}
